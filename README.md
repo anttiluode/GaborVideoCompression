@@ -1,4 +1,4 @@
-# SlapStackVideoCompression
+# SlapStackVideoCompression (Could have streamed video with eighties modem) 
 
 Try it at: https://anttiluode.github.io/GaborVideoCompression/
 

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SlapStack Video Compression — gate-event stream demonstrator</title>
+<style>
+  :root { --bg:#101418; --panel:#1a2129; --ink:#dfe7ee; --dim:#8fa0b0; --acc:#4ec98f; --warn:#e0b04e; --bad:#e06060; }
+  body { background:var(--bg); color:var(--ink); font-family:'Segoe UI',system-ui,sans-serif; margin:0; padding:16px; }
+  h1 { font-size:18px; margin:0 0 2px 0; font-weight:600; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:14px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .panel { background:var(--panel); border-radius:8px; padding:10px 12px; }
+  .panel h2 { font-size:12px; margin:0 0 6px 0; color:var(--dim); font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
+  canvas.view { image-rendering:pixelated; border-radius:4px; background:#000; display:block; }
+  .meters { min-width:330px; flex:1; }
+  .big { font-size:26px; font-weight:700; }
+  .unit { font-size:12px; color:var(--dim); }
+  table { border-collapse:collapse; font-size:12.5px; width:100%; }
+  td { padding:2px 6px 2px 0; }
+  td.v { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .g { color:var(--acc); } .y { color:var(--warn); } .r { color:var(--bad); }
+  .ctrl { font-size:12px; color:var(--dim); display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .ctrl label { display:flex; gap:6px; align-items:center; }
+  input[type=range] { width:110px; }
+  button { background:#26303b; color:var(--ink); border:1px solid #33404d; border-radius:5px; padding:5px 12px; font-size:12px; cursor:pointer; }
+  button:hover { background:#2e3a47; }
+  #chart { border-radius:4px; background:#0c1014; }
+  .foot { color:var(--dim); font-size:11.5px; margin-top:12px; max-width:1050px; line-height:1.5; }
+</style>
+</head>
+<body>
+<h1>SlapStack Video Compression — motion as a stream of gate events</h1>
+<div class="sub">Sparse Gabor code, 3060-atom pyramid dictionary, 64×64 grayscale. Amplitudes at the measured knee: 1 sign + 4 magnitude bits per gate.
+Transmitted per frame: gate <b>births</b> (dictionary address + amp), gate <b>deaths</b> (active index), and 5-bit amp <b>updates</b> — nothing else.</div>
+
+<div class="row">
+  <div class="panel"><h2>input (64×64)</h2><canvas id="cin" class="view" width="64" height="64" style="width:256px;height:256px"></canvas></div>
+  <div class="panel"><h2>reconstruction (from quantized stream)</h2><canvas id="crec" class="view" width="64" height="64" style="width:256px;height:256px"></canvas></div>
+  <div class="panel"><h2>gate events — <span class="g">births</span> / <span class="r">deaths</span> / open</h2><canvas id="cev" class="view" width="256" height="256" style="width:256px;height:256px"></canvas></div>
+
+  <div class="panel meters"><h2>the meter</h2>
+    <div><span class="big g" id="mEvent">—</span> <span class="unit">kbit/s event stream</span></div>
+    <div style="margin:2px 0 8px 0"><span class="big" style="color:var(--dim)" id="mRaw">—</span> <span class="unit">kbit/s raw pixels · <b id="mRatio" class="g">—×</b> smaller</span></div>
+    <table>
+      <tr><td>PSNR (transmitted vs input)</td><td class="v" id="tPsnr">—</td></tr>
+      <tr><td>gates open</td><td class="v" id="tGates">—</td></tr>
+      <tr><td>births / deaths / amp-updates per frame</td><td class="v" id="tEvents">—</td></tr>
+      <tr><td>gate churn (events ÷ open gates)</td><td class="v" id="tChurn">—</td></tr>
+      <tr><td>event bits / frame</td><td class="v" id="tBits">—</td></tr>
+      <tr><td>intra (full-code) bits / frame would be</td><td class="v" id="tIntra">—</td></tr>
+      <tr><td>fps</td><td class="v" id="tFps">—</td></tr>
+    </table>
+    <div class="ctrl">
+      <label>max gates <input type="range" id="sK" min="40" max="240" value="140"><span id="vK">140</span></label>
+      <label>births/frame <input type="range" id="sB" min="1" max="12" value="5"><span id="vB">5</span></label>
+      <label>death thr <input type="range" id="sD" min="1" max="12" value="4"><span id="vD">0.020</span></label>
+    </div>
+    <div class="ctrl">
+      <button id="bSrc">use test pattern</button>
+      <button id="bPause">pause</button>
+      <span id="status" class="y">starting camera…</span>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:14px"><h2>bits per frame — <span class="g">event stream</span> vs <span style="color:#7a8fa5">intra full-code</span> vs <span class="r">raw 32,768</span></h2>
+<canvas id="chart" width="1040" height="130"></canvas></div>
+
+<div class="foot"><b>Honest limits.</b> Toy Gabor dictionary (not a trained Bet 7 encoder); grayscale 64×64; matching-pursuit births, Landweber amplitude refit. The live falsifier is the <b>churn</b> number: the "motion = sparse gate events" claim is only as good as gate survival between frames. If churn approaches 100%, event coding degenerates to intra coding and the claim dies on this screen. Reconstruction is decoded from exactly the bits the meter counts — quantized amps, nothing hidden. Measured offline (gate_only_reconstruction.py): support carries 10–14.6 dB over amplitude-matched random gates; amplitude knee at 4 magnitude bits; a coarse gate is worth ~5 fine gates.</div>
+
+<video id="vid" style="display:none" playsinline></video>
+<script>
+'use strict';
+const SZ=64, NPX=SZ*SZ;
+// ---------- dictionary: 4 scales, pyramid strides, 4 orientations x quadrature + gaussian ----------
+const scales=[{s:2,st:4},{s:4,st:8},{s:8,st:16},{s:16,st:32}];
+const meta=[]; let count=0;
+for(let si=0;si<4;si++){const {s,st}=scales[si];
+  for(let y0=st/2;y0<SZ;y0+=st)for(let x0=st/2;x0<SZ;x0+=st){
+    meta.push({si,s,x0,y0,k:'g'});
+    for(let o=0;o<4;o++){meta.push({si,s,x0,y0,k:'c',o});meta.push({si,s,x0,y0,k:'s',o});}
+  }}
+const NA=meta.length;                       // 3060
+const D=new Float32Array(NA*NPX);
+(function build(){
+  for(let a=0;a<NA;a++){const m=meta[a],lam=2.2*m.s,off=a*NPX;let nrm=0;
+    for(let y=0;y<SZ;y++)for(let x=0;x<SZ;x++){
+      const dx=x-m.x0,dy=y-m.y0,env=Math.exp(-(dx*dx+dy*dy)/(2*m.s*m.s));
+      let v=env;
+      if(m.k!=='g'){const th=Math.PI*m.o/4,u=dx*Math.cos(th)+dy*Math.sin(th),ph=m.k==='c'?0:Math.PI/2;
+        v=env*Math.cos(2*Math.PI*u/lam+ph);}
+      D[off+y*SZ+x]=v; nrm+=v*v;}
+    nrm=1/Math.sqrt(nrm);
+    for(let p=0;p<NPX;p++)D[off+p]*=nrm;}
+})();
+const dot=(a,x)=>{const off=a*NPX;let s=0;for(let p=0;p<NPX;p++)s+=D[off+p]*x[p];return s;};
+
+// ---------- quantizer: 1 sign + 4 bits log-magnitude, fixed range (no side info) ----------
+const QLO=Math.log(0.01),QHI=Math.log(25),QL=16;
+function quant(v){const sg=v<0?-1:1,m=Math.min(Math.max(Math.abs(v),0.01),25);
+  const q=Math.round((Math.log(m)-QLO)/(QHI-QLO)*(QL-1));return{code:q,sign:sg,val:sg*Math.exp(QLO+q/(QL-1)*(QHI-QLO))};}
+
+// ---------- coder state ----------
+let active=[];            // {atom, amp, qcode, qsign, qval, age}
+const img=new Float32Array(NPX), rsd=new Float32Array(NPX), rec=new Float32Array(NPX);
+let births=[],deaths=[];
+const P={K:140,B:5,dth:0.02};
+
+function encodeFrame(){
+  births.length=0;deaths.length=0;
+  // 1. Landweber refit of surviving amps (warm start)
+  for(let it=0;it<8;it++){
+    rec.fill(0);
+    for(const g of active){const off=g.atom*NPX;for(let p=0;p<NPX;p++)rec[p]+=g.amp*D[off+p];}
+    for(let p=0;p<NPX;p++)rsd[p]=img[p]-rec[p];
+    for(const g of active)g.amp+=0.45*dot(g.atom,rsd);
+  }
+  // 2. deaths
+  const survivors=[];
+  for(const g of active){ if(Math.abs(g.amp)<P.dth){deaths.push(g);} else {g.age++;survivors.push(g);} }
+  active=survivors;
+  // 3. residual after survivors
+  rec.fill(0);
+  for(const g of active){const off=g.atom*NPX;for(let p=0;p<NPX;p++)rec[p]+=g.amp*D[off+p];}
+  for(let p=0;p<NPX;p++)rsd[p]=img[p]-rec[p];
+  // 4. births: sequential MP on residual
+  const used=new Set(active.map(g=>g.atom));
+  for(let b=0;b<P.B && active.length<P.K;b++){
+    let best=-1,bc=0;
+    for(let a=0;a<NA;a++){if(used.has(a))continue;const c=dot(a,rsd);if(Math.abs(c)>Math.abs(bc)){bc=c;best=a;}}
+    if(best<0||Math.abs(bc)<P.dth*1.6)break;
+    const g={atom:best,amp:bc,age:0};active.push(g);births.push(g);used.add(best);
+    const off=best*NPX;for(let p=0;p<NPX;p++)rsd[p]-=bc*D[off+p];
+  }
+  // 5. quantize; count amp updates (changed 5-bit codes among pre-existing gates)
+  let updates=0;
+  for(const g of active){const q=quant(g.amp);
+    const isNew=g.age===0;
+    if(!isNew&&(q.code!==g.qcode||q.sign!==g.qsign))updates++;
+    g.qcode=q.code;g.qsign=q.sign;g.qval=q.val;}
+  // 6. decode from quantized stream
+  rec.fill(0);
+  for(const g of active){const off=g.atom*NPX;for(let p=0;p<NPX;p++)rec[p]+=g.qval*D[off+p];}
+  // 7. bits
+  const bAddr=Math.ceil(Math.log2(NA));            // 12
+  const bIdx=8;                                     // active-list index
+  const eventBits=births.length*(bAddr+5)+deaths.length*bIdx+updates*(bIdx+5)+16;
+  const intraBits=Math.round(lgC(NA,Math.max(active.length,1)))+active.length*5;
+  return{updates,eventBits,intraBits};
+}
+function lgC(n,k){let s=0;for(let i=0;i<k;i++)s+=Math.log2((n-i)/(k-i));return s;}
+function psnr(){let e=0;for(let p=0;p<NPX;p++){const d=img[p]-rec[p];e+=d*d;}return 10*Math.log10(NPX/Math.max(e,1e-9));}
+
+// ---------- sources ----------
+const vid=document.getElementById('vid');let useCam=true,camOK=false,t0=performance.now();
+navigator.mediaDevices&&navigator.mediaDevices.getUserMedia({video:{width:320,height:240}})
+  .then(st=>{vid.srcObject=st;vid.play();camOK=true;setStatus('camera live','g');})
+  .catch(()=>{useCam=false;setStatus('camera unavailable — test pattern','y');});
+const grab=document.createElement('canvas');grab.width=SZ;grab.height=SZ;const gctx=grab.getContext('2d',{willReadFrequently:true});
+function acquire(){
+  if(useCam&&camOK&&vid.videoWidth>0){
+    const s=Math.min(vid.videoWidth,vid.videoHeight);
+    gctx.drawImage(vid,(vid.videoWidth-s)/2,(vid.videoHeight-s)/2,s,s,0,0,SZ,SZ);
+    const d=gctx.getImageData(0,0,SZ,SZ).data;
+    for(let p=0;p<NPX;p++)img[p]=(0.299*d[4*p]+0.587*d[4*p+1]+0.114*d[4*p+2])/255;
+  } else {                                    // test pattern: gradient + orbiting striped disk + occluder
+    const t=(performance.now()-t0)/1000,cx=32+16*Math.cos(0.6*t),cy=32+12*Math.sin(0.9*t);
+    for(let y=0;y<SZ;y++)for(let x=0;x<SZ;x++){
+      let v=0.30+0.25*y/SZ;
+      const dx=x-cx,dy=y-cy;
+      if(dx*dx+dy*dy<130)v=0.5+0.35*Math.sin(0.9*x+2*t);
+      if(Math.abs(x-46)<8&&Math.abs(y-18)<8)v=0.12;
+      img[y*SZ+x]=Math.min(Math.max(v,0),1);}
+  }
+}
+
+// ---------- render ----------
+const cin=document.getElementById('cin').getContext('2d'),crec=document.getElementById('crec').getContext('2d');
+const cev=document.getElementById('cev').getContext('2d'),cch=document.getElementById('chart').getContext('2d');
+const idI=cin.createImageData(SZ,SZ),idR=crec.createImageData(SZ,SZ);
+function paint(buf,idata,ctx){for(let p=0;p<NPX;p++){const v=Math.min(Math.max(buf[p],0),1)*255|0;
+  idata.data[4*p]=idata.data[4*p+1]=idata.data[4*p+2]=v;idata.data[4*p+3]=255;}ctx.putImageData(idata,0,0);}
+function paintEvents(){
+  cev.fillStyle='rgba(12,16,20,0.55)';cev.fillRect(0,0,256,256);
+  const S=4;
+  for(const g of active){const m=meta[g.atom];
+    cev.strokeStyle=g.age===0?'#4ec98f':'rgba(200,215,230,'+Math.min(0.15+Math.abs(g.qval)*0.5,0.85)+')';
+    cev.lineWidth=g.age===0?2:1;
+    cev.beginPath();cev.arc(m.x0*S,m.y0*S,m.s*S*0.6,0,7);cev.stroke();}
+  for(const g of deaths){const m=meta[g.atom];
+    cev.strokeStyle='#e06060';cev.lineWidth=1.5;
+    cev.beginPath();cev.arc(m.x0*S,m.y0*S,m.s*S*0.6,0,7);cev.stroke();}
+}
+const hist=[];
+function paintChart(){
+  const W=1040,H=130;cch.fillStyle='#0c1014';cch.fillRect(0,0,W,H);
+  const mx=4000;
+  cch.strokeStyle='#e06060';cch.setLineDash([4,4]);cch.beginPath();
+  cch.moveTo(0,H-2);cch.lineTo(W,H-2);cch.stroke();cch.setLineDash([]);
+  cch.fillStyle='#e06060';cch.font='10px sans-serif';cch.fillText('raw 32768 ↓ (off scale)',W-130,H-8);
+  const plot=(key,col)=>{cch.strokeStyle=col;cch.beginPath();
+    hist.forEach((h,i)=>{const x=i/(hist.length-1||1)*W,y=H-Math.min(h[key],mx)/mx*(H-14)-4;
+      i?cch.lineTo(x,y):cch.moveTo(x,y);});cch.stroke();};
+  if(hist.length>1){plot('intra','#7a8fa5');plot('ev','#4ec98f');}
+  cch.fillStyle='#8fa0b0';cch.fillText('0 – 4000 bits/frame',6,12);
+}
+
+// ---------- UI ----------
+const $=id=>document.getElementById(id);
+function setStatus(t,c){const e=$('status');e.textContent=t;e.className=c;}
+$('sK').oninput=e=>{P.K=+e.target.value;$('vK').textContent=P.K;};
+$('sB').oninput=e=>{P.B=+e.target.value;$('vB').textContent=P.B;};
+$('sD').oninput=e=>{P.dth=+e.target.value/200;$('vD').textContent=P.dth.toFixed(3);};
+$('bSrc').onclick=()=>{useCam=!useCam;$('bSrc').textContent=useCam?'use test pattern':'use camera';
+  setStatus(useCam?(camOK?'camera live':'camera unavailable — test pattern'):'test pattern','g');};
+let paused=false;$('bPause').onclick=()=>{paused=!paused;$('bPause').textContent=paused?'resume':'pause';};
+
+// ---------- loop ----------
+let lastT=performance.now(),fps=0,evAvg=0;
+function loop(){
+  if(!paused){
+    acquire();
+    const r=encodeFrame();
+    const now=performance.now(),dt=now-lastT;lastT=now;
+    fps=0.9*fps+0.1*(1000/Math.max(dt,1));
+    evAvg=evAvg?0.9*evAvg+0.1*r.eventBits:r.eventBits;
+    paint(img,idI,cin);paint(rec,idR,crec);paintEvents();
+    hist.push({ev:r.eventBits,intra:r.intraBits});if(hist.length>240)hist.shift();paintChart();
+    const churn=(births.length+deaths.length)/Math.max(active.length,1);
+    $('mEvent').textContent=(evAvg*fps/1000).toFixed(1);
+    $('mRaw').textContent=(32768*fps/1000).toFixed(0);
+    $('mRatio').textContent=(32768/Math.max(evAvg,1)).toFixed(0)+'×';
+    $('tPsnr').textContent=psnr().toFixed(1)+' dB';
+    $('tGates').textContent=active.length+' / '+P.K;
+    $('tEvents').textContent=births.length+' / '+deaths.length+' / '+r.updates;
+    $('tChurn').textContent=(100*churn).toFixed(1)+' %';
+    $('tChurn').className='v '+(churn<0.15?'g':churn<0.4?'y':'r');
+    $('tBits').textContent=r.eventBits;
+    $('tIntra').textContent=r.intraBits;
+    $('tFps').textContent=fps.toFixed(1);
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

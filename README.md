@@ -1,5 +1,7 @@
 # SlapStackVideoCompression
 
+Try it at: https://anttiluode.github.io/GaborVideoCompression/
+
 ![pic](pic.png)
 
 **Motion as a stream of gate events.** A live, single-file demonstrator: webcam → sparse Gabor code → transmit only gate *births*, gate *deaths*, and 5-bit amplitude *updates* — and decode the video back from exactly those bits, with the bitrate on screen.

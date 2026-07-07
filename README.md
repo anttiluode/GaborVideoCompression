@@ -1,5 +1,7 @@
 # SlapStackVideoCompression
 
+![pic](pic.png)
+
 **Motion as a stream of gate events.** A live, single-file demonstrator: webcam → sparse Gabor code → transmit only gate *births*, gate *deaths*, and 5-bit amplitude *updates* — and decode the video back from exactly those bits, with the bitrate on screen.
 
 Open `slapstack_video_compression.html` locally (camera permission required; a moving test-pattern mode is built in if no camera). Built with Claude (Anthropic), July 7, 2026.
